@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Anonymous Praise Board</title>
+  <style>
+    body { font-family: Arial; max-width: 800px; margin: auto; }
+    .post { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+    img { max-width: 100%; }
+    button { margin: 5px; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+<h1>💖 Anonymous Praise Board</h1>
+
+<form id="uploadForm">
+  <input type="file" id="imageInput" required />
+  <br /><br />
+  <input type="text" id="captionInput" placeholder="Write a caption..." />
+  <br /><br />
+  <button type="submit">Post</button>
+</form>
+
+<hr />
+
+<div id="posts"></div>
+<button id="loadMore">Load More</button>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import {
+  getFirestore, collection, addDoc, query, orderBy, limit,
+  getDocs, startAfter, updateDoc, doc, deleteDoc
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import {
+  getStorage, ref, uploadBytes, getDownloadURL
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
+
+// 🔴 REPLACE
+const firebaseConfig = {
+  apiKey: "YOUR_KEY",
+  authDomain: "YOUR_DOMAIN",
+  projectId: "YOUR_PROJECT",
+  storageBucket: "YOUR_BUCKET",
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const storage = getStorage(app);
+
+const phrases = [
+  "Way to go! 😊",
+  "Keep up the good work! 💪",
+  "You’re on the right path! 🚀",
+  "You rock! 🤘",
+  "You are amazing! ❤️"
+];
+
+let lastVisible = null;
+
+async function uploadPost(file, caption) {
+  const storageRef = ref(storage, "images/" + Date.now());
+  await uploadBytes(storageRef, file);
+  const url = await getDownloadURL(storageRef);
+
+  await addDoc(collection(db, "posts"), {
+    imageUrl: url,
+    caption,
+    createdAt: Date.now(),
+    reports: 0,
+    reactions: Object.fromEntries(phrases.map(p => [p, 0]))
+  });
+}
+
+async function loadPosts(initial = false) {
+  let q;
+
+  if (initial || !lastVisible) {
+    q = query(collection(db, "posts"), orderBy("createdAt", "desc"), limit(5));
+    document.getElementById("posts").innerHTML = "";
+  } else {
+    q = query(
+      collection(db, "posts"),
+      orderBy("createdAt", "desc"),
+      startAfter(lastVisible),
+      limit(5)
+    );
+  }
+
+  const snapshot = await getDocs(q);
+  if (snapshot.empty) return;
+
+  lastVisible = snapshot.docs[snapshot.docs.length - 1];
+
+  snapshot.forEach(docSnap => {
+    const data = docSnap.data();
+
+    // auto-hide heavily reported
+    if (data.reports > 5) return;
+
+    const postEl = document.createElement("div");
+    postEl.className = "post";
+
+    let reactionsHTML = "";
+    phrases.forEach(p => {
+      reactionsHTML += `<button data-id="${docSnap.id}" data-type="react" data-phrase="${p}">
+        ${p} (${data.reactions[p] || 0})
+      </button>`;
+    });
+
+    postEl.innerHTML = `
+      <img src="${data.imageUrl}" />
+      <p>${data.caption || ""}</p>
+      <div>${reactionsHTML}</div>
+      <button data-id="${docSnap.id}" data-type="report">🚩 Report (${data.reports})</button>
+      <button data-id="${docSnap.id}" data-type="delete">🗑 Delete</button>
+    `;
+
+    document.getElementById("posts").appendChild(postEl);
+  });
+}
+
+document.addEventListener("click", async (e) => {
+  const id = e.target.dataset.id;
+  const type = e.target.dataset.type;
+  if (!id || !type) return;
+
+  const postRef = doc(db, "posts", id);
+
+  if (type === "react") {
+    const phrase = e.target.dataset.phrase;
+    const snap = await getDocs(collection(db, "posts"));
+    snap.forEach(async d => {
+      if (d.id === id) {
+        const data = d.data();
+        data.reactions[phrase]++;
+        await updateDoc(postRef, { reactions: data.reactions });
+        loadPosts(true);
+      }
+    });
+  }
+
+  if (type === "report") {
+    const snap = await getDocs(collection(db, "posts"));
+    snap.forEach(async d => {
+      if (d.id === id) {
+        const data = d.data();
+        await updateDoc(postRef, { reports: (data.reports || 0) + 1 });
+        loadPosts(true);
+      }
+    });
+  }
+
+  if (type === "delete") {
+    await deleteDoc(postRef);
+    loadPosts(true);
+  }
+});
+
+document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const file = document.getElementById("imageInput").files[0];
+  const caption = document.getElementById("captionInput").value;
+
+  if (!file) return;
+
+  await uploadPost(file, caption);
+  lastVisible = null;
+  loadPosts(true);
+});
+
+document.getElementById("loadMore").addEventListener("click", () => {
+  loadPosts(false);
+});
+
+loadPosts(true);
+</script>
+
+</body>
+</html>
